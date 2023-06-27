@@ -1,0 +1,382 @@
+---
+title: "Summary of Options for Multiple Response Variables (ODK)"
+author: "Sam Dumble"
+date: "2023-06-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(openxlsx)
+```
+
+## Overview
+
+Analysing multiple response variables is something that we do quite a lot - particularly in the format it comes down from ODK.
+
+I know various members of the team have different strategies for dealing with this - none of the R packages I have found quite do what I want, especially with the added layer from ODK data of having values and having labels. So I have tried to convert my standard workflow into some functions and sharing these to help in the future, and also showing a worked through example of the code.
+
+
+## Part 1  - The easy option using the functions I have written
+
+If you trust my functions then in order to get some nice output what you will need is an ODK form in xlsx, a dataset created from that ODK form and the script `multi_functions.R`
+
+
+**Read in the survey and choices sheets from the xlsx form**
+```{r cars}
+survey<-read.xlsx("RHoMIS_croplist.xlsx","survey")
+choices<-read.xlsx("RHoMIS_croplist.xlsx","choices")
+```
+
+**Read in the data**
+I have created one version with the multiple column format, and one with the single column format
+```{r}
+single_column_example<-read.csv("single_column_export.csv",sep=";")
+multiple_column_example<-read.csv("seperate_columns_export.csv",sep=";")
+```
+
+**Load the functions**
+If people think these could be useful I might turn them into functions
+```{r}
+source("multi_functions.R")
+```
+
+**Identify the column and the labels**
+I am interested in the multiple select column "crops_all" which uses the list named "crop_list"
+```{r}
+labels<-filter(choices,list_name=="crop_list")
+```
+
+
+**From the multiple select data we need the dataframe, the labels, & id_string which identifies the multiple column select**
+
+```{r}
+multi_response_odk(data=multiple_column_example,labelset=labels,id_string="crops_all.")
+```
+
+**By default I include all values. I can set retain_empty=FALSE to drop the unselected options**
+```{r}
+multi_response_odk(data=multiple_column_example,labelset=labels,id_string="crops_all.",retain_empty = FALSE)
+```
+
+**I could also split by country**
+```{r}
+multi_response_odk(data=multiple_column_example,labelset=labels,id_string="crops_all.",retain_empty = FALSE,group="country")
+```
+
+**If I have everything smushed into one column I need the name of that column, and to use the argument `multicolumn` and not `id_string`. Everything else is the same.**
+
+```{r}
+multi_response_odk(data=single_column_example,labelset=labels,multicolumn = "crops_all",retain_empty = FALSE,group="country")
+```
+
+**And I can change the language and make a pretty table with a few moves**
+```{r}
+multi_response_odk(data=single_column_example,labelset=labels,multicolumn = "crops_all",retain_empty = FALSE,group="country",language="Español.(es)") %>%
+  select(country,Crop=label,n,`Percentage of Respondents`=per_respondents) %>%
+    mutate(`Percentage of Respondents`=scales::percent(`Percentage of Respondents`))
+```
+
+
+**Or pipe into a ggplot**
+
+```{r}
+ multi_response_odk(data=single_column_example,labelset=labels,multicolumn = "crops_all",retain_empty = FALSE) %>%
+  #adding some lines so that no answer comes last and other selections are in reversing order with most popular at top
+  mutate(y_axis=reorder(label,n,sum,na.rm=T)) %>%
+    mutate(y_axis=relevel(y_axis,ref="No answer")) %>%
+#then using geom_col and some standard ggplot functions to make it look a bit prettier
+  ggplot(aes(y=y_axis,x=per_respondents))+
+    geom_col(col="black")+
+      geom_text(aes(label=scales::percent(per_respondents)),hjust=-0.1,size=2)+
+        scale_x_continuous(labels=scales::percent,limits=c(0,0.5))+
+          xlab("Percent of Respondents")+
+            ylab("Response")+
+              ggtitle("Which crops do you grow?",subtitle="Multiple Responses Allowed")+
+                theme_light()
+```
+
+
+```{r}
+ multi_response_odk(data=single_column_example,labelset=labels,multicolumn = "crops_all",retain_empty = FALSE,group="country") %>%
+  #adding some lines so that no answer comes last and other selections are in reversing order with most popular at top
+  mutate(y_axis=reorder(label,n,sum,na.rm=T)) %>%
+    mutate(y_axis=relevel(y_axis,ref="No answer")) %>%
+#then using geom_col and some standard ggplot functions to make it look a bit prettier
+  ggplot(aes(y=y_axis,x=per_respondents,fill=country))+
+    geom_col(col="black")+
+  facet_wrap(~country,nrow=1)+
+      geom_text(aes(label=scales::percent(per_respondents)),hjust=-0.1,size=2)+
+        scale_x_continuous(labels=scales::percent,limits=c(0,1))+
+          xlab("Percent of Respondents")+
+            ylab("Response")+
+              ggtitle("Which crops do you grow?",subtitle="Multiple Responses Allowed")+
+                theme_light()
+```
+
+
+## Part 2  - Doing it yourself and with some extensions that would be harder to turn into functions
+
+Generally my preferred mechanism for dealing with multiple responses is to convert from respondent level to response level (i.e. wide to long) as this makes it easier to then pipe into ggplot or dplyr and play around with the outputs.
+I also want to identify additional categories to create if there are common "specify other" responses
+
+Ideally the export would be made including the multiple column binaries in the first place as it is much easier to do from that point - but this is not always possible.
+
+I am also assuming that you are exporting ODK data to show the values, not the labels. This means that it is easier to work with and easy to switch up the language in the plots. If you don't care about this (i.e. you have or need one language only) you can skip those steps in the code below and just look at the labels.
+
+## 1. Converting Single Column To Response Level
+
+
+```{r single_data}
+single_column_example %>% 
+  head()
+```
+
+### Step 1.1 Split the multiple response into multiple variables
+
+```{r}
+single_column_example %>% 
+  separate(crops_all,into=paste0("crop_selected",1:(1+max(str_count(.$crops_all," ")))))
+```
+
+
+### Step 1.3 Convert into response level
+
+```{r}
+single_column_example %>% 
+  separate(crops_all,into=paste0("crop_selected",1:(1+max(str_count(.$crops_all," "))))) %>%
+    select(X_uuid,contains("crop_selected"),contains("crops_other")) %>%
+      pivot_longer(contains("crop_selected"),names_to = "selection",values_to = "crop",values_drop_na = TRUE)
+```
+
+### Step 1.3 Merge in labels
+
+```{r}
+single_column_example %>% 
+  separate(crops_all,sep=" ",into=paste0("crop_selected",1:(1+max(str_count(.$crops_all," "))))) %>%
+    select(X_uuid,contains("crop_selected"),contains("crops_other")) %>%
+      pivot_longer(contains("crop_selected"),names_to = "selection",values_to = "crop",values_drop_na = TRUE) %>%
+    select(-selection) %>%
+        inner_join(
+          filter(choices,list_name=="crop_list"),by=c("crop"="name"))->long_multiresponses_from_single_column
+```
+
+
+## 2. Converting Multiple Column To Response Level
+
+Aim now is to get that same format of data from the multiple binary variable format as well
+
+```{r}
+multiple_column_example %>% 
+    select(X_uuid,contains("crops_all."),contains("crops_other")) %>%
+      pivot_longer(contains("crops_all"),names_to = "crop",values_to = "exist") %>%
+  filter(exist==1) %>%
+  mutate(crop=str_remove(crop,"crops_all.")) %>%
+  select(-exist) %>%
+        inner_join(
+          filter(choices,list_name=="crop_list"),by=c("crop"="name"))->long_multiresponses_from_multiple_column
+```
+
+
+
+At this point the two datasets should be identical to each other and we can move on to the next step
+
+
+## 3. Calculate Summaries
+
+For purpose of summaries "no response" is not the same as the other responses. 
+Exact choices on how to deal with it may vary by context - but generally it should be accounted for at respondent level, but not at response level
+Similarly if a respond did not select any options (if this was allowed by the logic of the form)
+
+```{r}
+long_multiresponses_from_multiple_column %>%
+  filter(crop!="no_answer")
+```
+
+
+```{r}
+overall_respondents <- multiple_column_example %>%
+  summarise(N_respondents=n()) %>%
+  mutate(Group=1)
+
+
+
+long_multiresponses_from_multiple_column %>%
+  mutate(N_responses=n()) %>%
+    group_by(crop,across(contains("label::")),N_responses) %>%
+      summarise(n=n()) %>%
+       mutate(Group=1)%>%
+           full_join(overall_respondents) %>%
+              mutate(per_responses=n/N_responses,
+                     per_respondents=n/N_respondents) %>%
+  ungroup()->summary_data
+```
+
+Can then pick one language and convert this into a pretty table:
+
+```{r}
+summary_data %>%
+  arrange(desc(n)) %>%
+  mutate("% of Respondents"=scales::percent(per_respondents),
+         "% of Responses"=scales::percent(per_responses)) %>%
+  select(Crop=`label::English.(en)`,n,"% of Respondents","% of Responses")
+```
+
+Si te gustas este table en espanol es muy facil tambien - solo necisitas un poco modificacion:
+
+```{r}
+summary_data %>%
+  arrange(desc(n)) %>%
+  mutate("% de Encuestadas"=scales::percent(per_respondents),
+         "% de Repuestas"=scales::percent(per_responses)) %>%
+  select(Cultivo=`label::Español.(es)`,n,"% de Encuestadas","% de Repuestas")
+```
+
+### Split by group
+
+The Group=1 stage is a bit clunky, but means the code can be more or less kept the same if you want to split this by country
+
+For human readable table better to pick just one 'sort' of percent and have columns by country
+
+Moving from the start - need to make sure you carry through the grouping variable (in this case Country):
+
+```{r}
+multiple_column_example %>% 
+    select(X_uuid,contains("crops_all."),contains("crops_other"),country) %>%
+      pivot_longer(contains("crops_all"),names_to = "crop",values_to = "exist") %>%
+  filter(exist==1) %>%
+  mutate(crop=str_remove(crop,"crops_all.")) %>%
+  select(-exist) %>%
+        inner_join(
+          filter(choices,list_name=="crop_list"),by=c("crop"="name"))->long_multiresponses_from_multiple_column_grouped
+
+
+overall_respondents_bygroup <- multiple_column_example %>%
+  group_by(country) %>%
+  summarise(N_respondents=n()) 
+
+
+
+long_multiresponses_from_multiple_column_grouped %>%
+    group_by(country) %>%
+  mutate(N_responses=n()) %>%
+  ungroup() %>%
+    group_by(crop,country,across(contains("label::")),N_responses) %>%
+      summarise(n=n()) %>%
+        ungroup() %>%
+           full_join(overall_respondents_bygroup,by="country") %>%
+              mutate(per_responses=n/N_responses,
+                     per_respondents=n/N_respondents) %>%
+  ungroup()->summary_data_grouped
+```
+```{r}
+summary_data_grouped %>%
+  mutate(Crop=reorder(`label::English.(en)`,per_respondents,mean)) %>%
+  arrange(country,desc(Crop)) %>%
+  mutate("% of Respondents"=scales::percent(per_respondents),
+         "% of Responses"=scales::percent(per_responses)) %>%
+  select(Country=country,Crop,n,"% of Respondents","% of Responses")
+```
+
+
+```{r}
+summary_data_grouped %>%
+  mutate(Crop=reorder(`label::English.(en)`,n,sum,na.rm=T)) %>%
+  arrange(country,desc(Crop)) %>%
+  mutate("%"=scales::percent(per_respondents)) %>%
+  select(Country=country,Crop,"%") %>%
+  pivot_wider(id_cols=Crop,names_from = Country,values_from="%",values_fill="0.0%" )
+```
+
+### Plots
+
+Easy enough to pipe the output from the previous steps into some barplots.
+Can use re-order to place the responses in descending order of popularity and then relevel to place any "non-answer" answers at the bottom
+
+```{r}
+summary_data %>%
+  mutate(y_axis=reorder(`label::English.(en)`,per_respondents,mean)) %>%
+    mutate(y_axis=relevel(y_axis,ref="No answer")) %>%
+  ggplot(aes(y=y_axis,x=per_respondents))+
+    geom_col(col="black")+
+      geom_text(aes(label=scales::percent(per_respondents)),hjust=-0.1,size=3)+
+        scale_x_continuous(labels=scales::percent,limits=c(0,0.5))+
+          xlab("Percent of Respondents")+
+            ylab("Response")+
+              ggtitle("Which crops do you grow?",subtitle="Multiple Responses Allowed")+
+                theme_light()
+```
+
+```{r}
+summary_data_grouped %>%
+  mutate(y_axis=reorder(`label::English.(en)`,n,sum,na.rm=T)) %>%
+    mutate(y_axis=relevel(y_axis,ref="No answer")) %>%
+  ggplot(aes(y=y_axis,x=per_respondents,fill=country))+
+    geom_col(col="black")+
+  facet_wrap(~country,nrow=1)+
+      geom_text(aes(label=scales::percent(per_respondents)),hjust=-0.1,size=2)+
+        scale_x_continuous(labels=scales::percent,limits=c(0,1))+
+          xlab("Percent of Respondents")+
+            ylab("Response")+
+              ggtitle("Which crops do you grow?",subtitle="Multiple Responses Allowed")+
+                theme_light()
+```
+
+## Dealing With Others
+
+Other 1 and Other 2 in this example are not really real categories. From the "long data format" this is easy enough to account for IF the other text has been cleaned.
+
+Can have a list of "acceptable" others which will then populate the same as others. But data cleaning before this step definitely needed.
+Only really worthwhile doing this in one language (since freetext is going to be harder to make multi-lingual) so this is very much assuming that cleaning is done into the language being selected
+
+```{r}
+multiple_column_example %>% 
+    select(X_uuid,contains("crops_all."),contains("crops_other"),country) %>%
+      pivot_longer(contains("crops_all"),names_to = "crop",values_to = "exist") %>%
+  filter(exist==1) %>%
+  mutate(crop=str_remove(crop,"crops_all.")) %>%
+  select(-exist) %>%
+        inner_join(
+          filter(choices,list_name=="crop_list"),by=c("crop"="name"))->long_multiresponses_from_multiple_column_grouped
+
+
+overall_respondents_bygroup <- multiple_column_example %>%
+  group_by(country) %>%
+  summarise(N_respondents=n()) 
+
+
+
+long_multiresponses_from_multiple_column_grouped %>%
+  mutate(combined_label=ifelse(!crop%in%c("other1","other2","other3"),`label::English.(en)`,
+                               ifelse(crop=="other1",
+                                      ifelse(crops_other1%in%c("Tef","Enset"),crops_other1,"Other"),
+                                        ifelse(crop=="other2",    ifelse(crops_other2%in%c("Tef","Enset"),crops_other2,"Other"),
+                                          ifelse(crops_other2%in%c("Tef","Enset"),crops_other3,"Other")
+                                      )))) %>%
+    group_by(country) %>%
+  mutate(N_responses=n()) %>%
+  ungroup() %>%
+    group_by(country,combined_label,N_responses) %>%
+      summarise(n=n()) %>%
+        ungroup() %>%
+           full_join(overall_respondents_bygroup,by="country") %>%
+              mutate(per_responses=n/N_responses,
+                     per_respondents=n/N_respondents) %>%
+  ungroup()->summary_data_grouped_others
+```
+
+```{r}
+summary_data_grouped_others %>%
+  mutate(y_axis=reorder(combined_label,n,sum,na.rm=T)) %>%
+    mutate(y_axis=relevel(y_axis,ref="No answer")) %>%
+  ggplot(aes(y=y_axis,x=per_respondents,fill=country))+
+    geom_col(col="black")+
+  facet_wrap(~country,nrow=1)+
+      geom_text(aes(label=scales::percent(per_respondents)),hjust=-0.1,size=2)+
+        scale_x_continuous(labels=scales::percent,limits=c(0,0.65))+
+          xlab("Percent of Respondents")+
+            ylab("Response")+
+              ggtitle("Which crops do you grow?",subtitle="Multiple Responses Allowed")+
+                theme_light()
+```
