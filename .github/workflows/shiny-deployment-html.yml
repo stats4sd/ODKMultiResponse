@@ -1,0 +1,37 @@
+# Script that sends POST request to a server. Use this for any project that you want to have automatically deployed to our Stats4SD Shiny server
+
+# This is setup to automatically publish the default branch to the **staging** environment, and any new releases to the **live** environment
+
+#####
+# How to customise this 
+# If you want to customise this for your own projects, make sure you set your own deployment key and url in your repo or organisation's secrets.
+#####
+
+name: Auto Deployment HTML
+
+# Controls when the action will run. Triggers the workflow on push or pull request
+# events but only for the main branch
+on:
+  push:
+    branches: [ "main" ]
+  release:
+    types: [ published ]
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  # This workflow contains a single job called "build"
+  deploy:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      - name: Fast Webhook HTML
+        # You may pin to the exact commit or the version.
+        # uses: jasongitmail/fast-webhook@6deed6ce6c4f3b7044a27fc272b7a019a6e4c41a
+        uses: jasongitmail/fast-webhook@v1.1.4
+        with:
+          # The webhook URL to send the request to.
+          url: ${{ secrets.SHINYSERVERURL }}
+          # The stringified JSON body to be sent, if any.
+          json: '{"secret": "${{ secrets.SHINYDEPLOYSECRET }}", "repo": "${{ github.repository }}", "ref": "${{ github.ref }}", "destination": "html"}'
